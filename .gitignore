@@ -150,3 +150,5 @@ docs/source/examples/training_data/
 for_reviewers/
 
 
+.DS_Store
+/src/symbac/simulation/frames

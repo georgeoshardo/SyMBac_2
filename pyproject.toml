@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "SyMBac"
+version = "0.5.0"
+authors = [
+    {name = "Georgeos Hardo", email = "gh464@cantab.ac.uk"},
+]
+description = "A package for generating synthetic images of bacteria in phase contrast or fluorescence. Used for creating training data for machine learning segmentation and tracking algorithms."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "GPL-2.0"}
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU General Public License v2 (GPLv2)",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Topic :: Scientific/Engineering"
+]
+dependencies = [
+    "matplotlib",
+    "tqdm",
+    "ipywidgets",
+    "joblib",
+    "pymunk",
+    "pyglet",
+    "numpy",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "isort",
+    "pre-commit",
+    "pip-tools",
+    "ipytest"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"symbac" = ["sample_images/*.tiff"]
+
+[project.urls]
+"Homepage" = "https://github.com/georgeoshardo/SyMBac"
+"Documentation" = "https://symbac.readthedocs.io/en/latest/"
+
+[tool.black]
+line-length = 128
+target-version = ['py312']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
