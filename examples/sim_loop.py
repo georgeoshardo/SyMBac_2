@@ -9,8 +9,8 @@ from symbac.simulation.visualisation.live.live_visualisation import LiveVisualis
 from symbac.simulation.microfluidic_geometry import trench_creator, box_creator
 
 np.random.seed(42)
-from simcell import SimCell
-from config import CellConfig, SimViewerConfig, PhysicsConfig
+from symbac.simulation.simcell import SimCell
+from symbac.simulation.config import CellConfig, SimViewerConfig, PhysicsConfig
 import numpy as np
 from tqdm import tqdm
 
@@ -27,7 +27,7 @@ initial_cell_config = CellConfig(
     SEGMENT_RADIUS=10,
     SEGMENT_MASS=1.0,
     GROWTH_RATE=5, # Turning up the growth rate is a good way to speed up the simulation while keeping ITERATIONS high,
-    BASE_MAX_LENGTH=100, # This should be stable now!
+    BASE_MAX_LENGTH=130, # This should be stable now!
     MAX_LENGTH_VARIATION=0,
     MIN_LENGTH_AFTER_DIVISION=4,
     NOISE_STRENGTH=0.05,
@@ -40,7 +40,7 @@ initial_cell_config = CellConfig(
     #DAMPED_ROTARY_SPRING=True,  # Enable damped rotary springs, makes cells quite rigid
     #ROTARY_SPRING_STIFFNESS=2000_000, # A good starting point
     #ROTARY_SPRING_DAMPING=200_000, # A good starting point
-    PIVOT_JOINT_STIFFNESS=50000, # This can be lowered from the default np.inf, and the cell will be able to compress
+    PIVOT_JOINT_STIFFNESS=5000, # This can be lowered from the default np.inf, and the cell will be able to compress
     SIMPLE_LENGTH=False # If true, cell length is calculated continuously each time the length attribute is requested (QUITE!! slow, but higher precision because allows for cell compression) If false it is simply the segment distance * number of segments in a cell
 )
 
