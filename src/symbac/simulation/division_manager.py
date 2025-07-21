@@ -34,7 +34,6 @@ class DivisionManager:
                 (cell.physics_representation.num_segments - split_index) < self.config.MIN_LENGTH_AFTER_DIVISION:
 
             return False
-        print(cell.length)
         return True
 
     def get_split_index(self, cell: 'SimCell') -> int:

@@ -152,3 +152,7 @@ for_reviewers/
 
 .DS_Store
 /src/symbac/simulation/frames
+/examples/3d_volumes
+/examples/instance_masks_raw
+/examples/opl_images
+examples/simulation_output.pkl

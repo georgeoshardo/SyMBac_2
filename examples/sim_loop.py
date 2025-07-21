@@ -18,7 +18,7 @@ from tqdm import tqdm
 physics_config = PhysicsConfig(
     THREADED=True,
     THREADS=2,
-    ITERATIONS=100,
+    ITERATIONS=50,
 )
 
 #TODO: higher granularity require higher stiffness
@@ -27,8 +27,8 @@ initial_cell_config = CellConfig(
     SEGMENT_RADIUS=10,
     SEGMENT_MASS=1.0,
     GROWTH_RATE=5, # Turning up the growth rate is a good way to speed up the simulation while keeping ITERATIONS high,
-    BASE_MAX_LENGTH=130, # This should be stable now!
-    MAX_LENGTH_VARIATION=0,
+    BASE_MAX_LENGTH=180, # This should be stable now!
+    MAX_LENGTH_VARIATION=0.3,
     MIN_LENGTH_AFTER_DIVISION=4,
     NOISE_STRENGTH=0.05,
     SEED_CELL_SEGMENTS=30,
@@ -65,14 +65,14 @@ def trench_adder(simulator: 'Simulator') -> None:
 def box_adder(simulator: 'Simulator') -> None:
     box_creator(1000, 1000, (0, 0), simulator.space, barrier_thickness=10, fillet_radius=100)
 
-simulator.add_and_run_post_init_hook(box_adder)
+#simulator.add_and_run_post_init_hook(box_adder)
 
 def cell_remover(simulator: 'Simulator') -> None:
     for cell in simulator.cells:
         if cell.physics_representation.segments[0].body.position.y > 1000:
             simulator.colony.delete_cell(cell)
 
-simulator.add_post_step_hook(cell_remover)
+#simulator.add_post_step_hook(cell_remover)
 
 
 def cell_growth_rate_updater(cell: SimCell) -> None:
@@ -86,7 +86,7 @@ def cell_growth_rate_updater(cell: SimCell) -> None:
 
     cell.max_length = max(cell.length, int(random_max_len))
 
-simulator.add_pre_cell_grow_hook(cell_growth_rate_updater)
+#simulator.add_pre_cell_grow_hook(cell_growth_rate_updater)
 
 class CellColor:
     def __init__(self):
@@ -217,7 +217,7 @@ simulator.add_post_step_hook(my_logger.get_step_comp_time)
 simulator.add_post_step_hook(my_logger.log_cell_positions)
 
 
-sim_viewer_config = SimViewerConfig(SIM_STEPS_PER_DRAW=10)
+sim_viewer_config = SimViewerConfig(SIM_STEPS_PER_DRAW=20)
 live_visualisation = LiveVisualisation(sim_viewer_config)
 
 simulator.add_post_step_hook(live_visualisation.draw)
@@ -226,6 +226,9 @@ frames_to_render = [] # List to store data for rendering
 image_count = 0
 while live_visualisation.running:
         simulator.step()
+        if simulator.num_cells > 1500:
+            print("Simulation stopped.")
+            break
 
 from joblib import Parallel, delayed
 import matplotlib.pyplot as plt
@@ -279,16 +282,28 @@ for filename in os.listdir(output_directory):
         os.remove(os.path.join(output_directory, filename))
 
 # --- PARALLEL RENDERING ---
-print(f"\nStarting parallel rendering of {len(my_logger.frames_to_draw_mpl)} frames using all available CPU cores...")
-start_render_time = time.perf_counter()
+#print(f"\nStarting parallel rendering of {len(my_logger.frames_to_draw_mpl)} frames using all available CPU cores...")
+#start_render_time = time.perf_counter()
 
 # Use joblib to parallelize the rendering of saved frames
 # n_jobs=-1 uses all available CPU cores
-Parallel(n_jobs=-1)(
-    delayed(render_frame)(data, num, output_directory)
-    for num, data in tqdm(my_logger.frames_to_draw_mpl, desc="Rendering frames")
-)
+#Parallel(n_jobs=-1)(
+#    delayed(render_frame)(data, num, output_directory)
+#    for num, data in tqdm(my_logger.frames_to_draw_mpl, desc="Rendering frames")
+#)
 
 end_render_time = time.perf_counter()
-print(f"Parallel rendering completed in {end_render_time - start_render_time:.2f} seconds.")
-print(f"Output frames are saved in the '{output_directory}' directory.")
+#print(f"Parallel rendering completed in {end_render_time - start_render_time:.2f} seconds.")
+#print(f"Output frames are saved in the '{output_directory}' directory.")
+
+# Add this to the very end of sim_loop.py
+
+import pickle
+
+print("\nSaving simulation data for rendering...")
+# The data is in my_logger.frames_to_draw_mpl
+# It's a list of tuples: [(frame_number, frame_data), ...]
+with open('simulation_output.pkl', 'wb') as f:
+    pickle.dump(my_logger.frames_to_draw_mpl, f)
+
+print(f"Simulation data saved to simulation_output.pkl")
