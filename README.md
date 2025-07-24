@@ -5,3 +5,7 @@
 [Read the paper: Synthetic Micrographs of Bacteria (SyMBac) allows accurate segmentation of bacterial cells using deep neural networks
 ](https://doi.org/10.1186/s12915-022-01453-6
 ), Georgeos Hardo, Maximillian Noka, Somenath Bakshi
+
+
+https://github.com/user-attachments/assets/9b51b25a-6b1c-439e-af54-050921d3dc34
+
