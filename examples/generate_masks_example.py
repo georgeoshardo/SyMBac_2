@@ -10,9 +10,9 @@ from symbac.ground_truth import MaskGenerator, MaskConfig
 
 # Create a mask generator with custom configuration
 config = MaskConfig(
-    resolution=(3000, 3000),  # Smaller resolution for faster processing
+    resolution=(3000, 3000),  
     padding_px=50,
-    n_jobs=4  # Use 4 cores
+    n_jobs=-1  # Use 4 cores
 )
 
 mask_generator = MaskGenerator(config)
