@@ -159,3 +159,4 @@ examples/simulation_output.pkl
 /frames
 *.pkl
 frames.json
+/instance_masks_raw
