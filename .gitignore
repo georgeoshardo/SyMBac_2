@@ -156,3 +156,5 @@ for_reviewers/
 /examples/instance_masks_raw
 /examples/opl_images
 examples/simulation_output.pkl
+/frames
+*.pkl
