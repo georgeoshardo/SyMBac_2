@@ -158,3 +158,4 @@ for_reviewers/
 examples/simulation_output.pkl
 /frames
 *.pkl
+frames.json
