@@ -107,10 +107,10 @@ psf_pc = PSFModel.phase_contrast(
 
 render_config = RenderConfig(
     media_multiplier=30.0,
-    cell_multiplier=1.7,
-    device_multiplier=29.0,
-    defocus=0.3,
-    noise_var=0.0003,
+    cell_multiplier=-5.0,
+    device_multiplier=-50.0,
+    defocus=1.0,
+    noise_var=0.001,
     border_expansion=2.0,
 )
 

@@ -26,11 +26,23 @@ class RenderConfig:
 
     Controls intensity multipliers for different image regions (media, cells,
     device), defocus amount, noise parameters, and image matching options.
+
+    For phase contrast microscopy, the PSF kernel sum is typically negative
+    (~-1), which inverts overall intensity during convolution. This means:
+
+    - ``device_multiplier`` should be **negative** (e.g. -50): after PSF
+      inversion, device (PDMS) regions become positive → dark on Greys_r.
+    - ``media_multiplier`` should be **positive** (e.g. 30): after inversion,
+      media regions become negative → bright on Greys_r.
+    - ``cell_multiplier`` should be **negative** (e.g. -5): this *subtracts*
+      the cell OPL from the media level. After PSF inversion, cells become
+      less negative than media → darker than media on Greys_r, matching the
+      characteristic dark-cell appearance of positive phase contrast.
     """
     media_multiplier: float = 30.0
-    cell_multiplier: float = 1.7
-    device_multiplier: float = 29.0
-    defocus: float = 3.0
+    cell_multiplier: float = -5.0
+    device_multiplier: float = -50.0
+    defocus: float = 1.0
     noise_var: float = 0.001
     border_expansion: float = 1.5
     halo_top_intensity: float = 1.0
@@ -47,11 +59,13 @@ def generate_pc_opl(
     """Generate a phase-contrast or fluorescence OPL scene with region intensities.
 
     For phase contrast: the scene is built by assigning device_multiplier to
-    device walls, media_multiplier to the trench/chamber interior, and then
-    adding cell_multiplier * OPL on top. The cells create a slight intensity
-    bump above the media level. After PSF convolution (which has negative
-    sidelobes), this produces the characteristic phase contrast halo and
-    dark-cell appearance.
+    device (PDMS) regions, media_multiplier to the trench/chamber interior,
+    and then adding cell_multiplier * OPL on top of whatever region the cell
+    occupies (typically media).
+
+    With the standard negative cell_multiplier, cells subtract from the media
+    level, which after PSF convolution (kernel sum ~-1) produces the dark-cell
+    appearance of positive phase contrast microscopy.
 
     For fluorescence: only cells emit light; background is zero.
 
