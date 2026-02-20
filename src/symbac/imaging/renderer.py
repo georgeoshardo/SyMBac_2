@@ -173,6 +173,9 @@ def render_image(
     camera: Optional[Camera] = None,
     real_image: Optional[np.ndarray] = None,
     match_histogram: bool = False,
+    perlin_background: Optional[np.ndarray] = None,
+    perlin_attenuation: Optional[float] = None,
+    perlin_blur_sigma: Optional[float] = None,
     rng: Optional[np.random.Generator] = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Render a synthetic microscopy image from OPL scene and masks.
@@ -190,6 +193,7 @@ def render_image(
     4. Crop to scene bounds (still at input resolution)
     5. Apply halo effect
     6. Downscale to native resolution (if supersampling > 1)
+    6b. Add Perlin noise background (for colony/agar pad rendering)
     7. Rescale intensity to [0, 1]
     8. Optionally match histogram to a real image
     9. Add camera or ad-hoc noise
@@ -206,6 +210,11 @@ def render_image(
         camera: Optional Camera for noise simulation. If None, ad-hoc noise is used.
         real_image: Optional real image for histogram matching.
         match_histogram: Whether to match the histogram to the real image.
+        perlin_background: Optional Perlin noise background to add to the image.
+            Used for colony/agar pad rendering to simulate substrate texture.
+            Should be at native (not supersampled) resolution.
+        perlin_attenuation: Divide perlin noise by this factor (default: random 500-1500).
+        perlin_blur_sigma: Gaussian blur sigma for perlin noise (default: random 1-3).
         rng: Optional numpy random generator.
 
     Returns:
@@ -266,6 +275,17 @@ def render_image(
 
     # Step 8: Rescale to [0, 1]
     cropped = rescale_intensity(cropped.astype(np.float64), out_range=(0.0, 1.0))
+
+    # Step 8b: Add Perlin noise background (for colony/agar pad rendering)
+    # Applied AFTER rescale_intensity so the noise is visible on the [0,1] scale.
+    if perlin_background is not None:
+        from symbac.imaging.noise import apply_perlin_to_phase_contrast
+        cropped = apply_perlin_to_phase_contrast(
+            cropped, background=perlin_background,
+            attenuation=perlin_attenuation,
+            blur_sigma=perlin_blur_sigma,
+            rng=rng,
+        )
 
     # Step 9: Histogram matching
     if match_histogram and real_image is not None:
