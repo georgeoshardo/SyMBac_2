@@ -357,20 +357,28 @@ class Camera:
     ) -> np.ndarray:
         """Apply camera noise model to an image.
 
-        Scales image by sensitivity, adds Gaussian read noise with baseline.
+        The image is expected to be in [0, 1] range. It is:
+        1. Scaled up to physical detector counts (baseline * sensitivity)
+        2. Poisson shot noise is applied
+        3. Gaussian read noise is added
 
         Args:
-            image: Input image (should be in physical intensity units).
+            image: Input image in [0, 1] range.
             rng: Optional numpy random generator.
 
         Returns:
-            Noisy image.
+            Noisy image in physical intensity units.
         """
         if rng is None:
             rng = np.random.default_rng()
 
-        noisy = image / self.sensitivity
-        noisy = noisy + rng.normal(loc=self.baseline, scale=self.dark_noise, size=image.shape)
+        # Scale to detector count range
+        signal = image * self.baseline * self.sensitivity
+        signal = np.maximum(signal, 0)
+        # Poisson shot noise
+        noisy = rng.poisson(signal).astype(np.float64)
+        # Gaussian read noise
+        noisy = noisy + rng.normal(loc=0, scale=self.dark_noise, size=image.shape)
         return noisy
 
 

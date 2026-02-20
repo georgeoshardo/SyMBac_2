@@ -229,7 +229,7 @@ def _get_scene_bounds(
 
     # Also include static geometry (trench walls, boxes)
     for shape in simulator.space.shapes:
-        if shape.body.body_type == 1:  # STATIC
+        if shape.body.body_type == 2:  # pymunk.Body.STATIC
             bb = shape.bb
             all_positions.append((bb.left, bb.bottom))
             all_positions.append((bb.right, bb.top))
@@ -346,7 +346,7 @@ def draw_scene_with_geometry(
     ox, oy = origin
 
     for shape in simulator.space.shapes:
-        if shape.body.body_type != 1:  # Only STATIC bodies
+        if shape.body.body_type != 2:  # Only STATIC bodies (pymunk.Body.STATIC = 2)
             continue
 
         if isinstance(shape, __import__('pymunk').Segment):
@@ -392,6 +392,117 @@ def draw_scene_with_geometry(
     device_mask = device_mask[:h, :w]
 
     return scene_opl, scene_masks, device_mask
+
+
+def draw_scene_supersampled(
+    simulator: Simulator,
+    pixel_scale: float,
+    supersampling: int = 3,
+    label_masks: bool = True,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, tuple[int, int]]:
+    """Draw OPL, masks, and device mask all at supersampled resolution.
+
+    This is the correct entry point for the rendering pipeline as described
+    in the SyMBac paper: render at high resolution, convolve with PSF at
+    high resolution, then downscale the result to native resolution.
+
+    Args:
+        simulator: The Simulator instance.
+        pixel_scale: Microns per pixel at native camera resolution.
+        supersampling: Upscale factor (e.g. 3 means render at 3x resolution).
+        label_masks: Instance vs binary masks.
+
+    Returns:
+        Tuple of (opl_ss, masks_ss, device_ss, native_size).
+        opl_ss: OPL scene at supersampled resolution (float).
+        masks_ss: Instance masks at supersampled resolution (int32).
+        device_ss: Device mask at supersampled resolution (uint8).
+        native_size: (height, width) at native resolution for downscaling.
+    """
+    import pymunk as pm
+
+    origin, (h_native, w_native) = _get_scene_bounds(simulator, pixel_scale)
+    ss_scale = pixel_scale / supersampling
+    h_ss = h_native * supersampling
+    w_ss = w_native * supersampling
+
+    # Rasterize cells at supersampled resolution
+    opl_ss = np.zeros((h_ss, w_ss), dtype=np.float64)
+    mask_ss = np.zeros((h_ss, w_ss), dtype=np.int32)
+    overlap_count = np.zeros((h_ss, w_ss), dtype=np.int32)
+    ox, oy = origin
+
+    for cell in simulator.colony.cells:
+        segments = cell.physics_representation.segments
+        if not segments:
+            continue
+        positions = np.array([(seg.position.x, seg.position.y) for seg in segments])
+        radii = np.array([seg.radius for seg in segments])
+
+        for seg_pos, seg_r in zip(positions, radii):
+            cx = (seg_pos[0] - ox) / ss_scale
+            cy = (seg_pos[1] - oy) / ss_scale
+            r = seg_r / ss_scale
+
+            ix_min = max(0, int(np.floor(cx - r)))
+            ix_max = min(w_ss, int(np.ceil(cx + r)) + 1)
+            iy_min = max(0, int(np.floor(cy - r)))
+            iy_max = min(h_ss, int(np.ceil(cy + r)) + 1)
+            if ix_min >= ix_max or iy_min >= iy_max:
+                continue
+
+            yy, xx = np.mgrid[iy_min:iy_max, ix_min:ix_max]
+            dx = xx.astype(np.float64) + 0.5 - cx
+            dy = yy.astype(np.float64) + 0.5 - cy
+            dist_sq = dx * dx + dy * dy
+            r_sq = r * r
+            inside = dist_sq < r_sq
+            if not inside.any():
+                continue
+
+            thickness = np.zeros_like(dist_sq)
+            thickness[inside] = 2.0 * np.sqrt(r_sq - dist_sq[inside])
+            opl_ss[iy_min:iy_max, ix_min:ix_max] += thickness
+            mask_ss[iy_min:iy_max, ix_min:ix_max][inside] = cell.group_id
+            overlap_count[iy_min:iy_max, ix_min:ix_max] += inside.astype(np.int32)
+
+    # Zero out overlapping mask regions
+    mask_ss[overlap_count > 1] = 0
+    if not label_masks:
+        mask_ss = (mask_ss > 0).astype(np.int32)
+
+    # Rasterize device geometry at supersampled resolution
+    device_ss = np.zeros((h_ss, w_ss), dtype=np.uint8)
+    for shape in simulator.space.shapes:
+        if shape.body.body_type != 2:
+            continue
+        if isinstance(shape, pm.Segment):
+            a = shape.body.local_to_world(shape.a)
+            b = shape.body.local_to_world(shape.b)
+            thickness = shape.radius
+            ax_ss = (a.x - ox) / ss_scale
+            ay_ss = (a.y - oy) / ss_scale
+            bx_ss = (b.x - ox) / ss_scale
+            by_ss = (b.y - oy) / ss_scale
+            t_ss = thickness / ss_scale
+            _rasterize_thick_line(device_ss, ax_ss, ay_ss, bx_ss, by_ss, t_ss)
+        elif isinstance(shape, pm.Circle):
+            cx = shape.body.position.x + shape.offset.x
+            cy = shape.body.position.y + shape.offset.y
+            r = shape.radius
+            cx_ss = (cx - ox) / ss_scale
+            cy_ss = (cy - oy) / ss_scale
+            r_ss = r / ss_scale
+            y0 = max(0, int(cy_ss - r_ss))
+            y1 = min(h_ss, int(cy_ss + r_ss) + 1)
+            x0 = max(0, int(cx_ss - r_ss))
+            x1 = min(w_ss, int(cx_ss + r_ss) + 1)
+            if y0 < y1 and x0 < x1:
+                yy, xx = np.ogrid[y0:y1, x0:x1]
+                dist_sq = (xx - cx_ss) ** 2 + (yy - cy_ss) ** 2
+                device_ss[y0:y1, x0:x1][dist_sq <= r_ss ** 2] = 1
+
+    return opl_ss, mask_ss, device_ss, (h_native, w_native)
 
 
 def _rasterize_thick_line(
