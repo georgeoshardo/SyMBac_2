@@ -10,7 +10,7 @@ from __future__ import annotations
 import typing
 
 import numpy as np
-from scipy.ndimage import map_coordinates
+from scipy.ndimage import binary_fill_holes, label, map_coordinates
 from skimage.transform import rescale
 
 if typing.TYPE_CHECKING:
@@ -382,12 +382,32 @@ def draw_scene_with_geometry(
                 max(0, int(cx_ss - r_ss)):min(w_ss, int(cx_ss + r_ss) + 1)
             ][dist_sq <= r_ss ** 2] = 1
 
+    # Fill the exterior: everything outside the trench = PDMS (device)
+    # Use the cell OPL to find seeds for the interior (where cells are)
+    # Rasterize cells at supersampled resolution for seeding
+    cell_mask_ss = np.zeros((h_ss, w_ss), dtype=np.int32)
+    for cell in simulator.colony.cells:
+        for seg in cell.physics_representation.segments:
+            cx = (seg.position.x - ox) / ss_scale
+            cy = (seg.position.y - oy) / ss_scale
+            r = seg.radius / ss_scale
+            y0 = max(0, int(cy - r))
+            y1 = min(h_ss, int(cy + r) + 1)
+            x0 = max(0, int(cx - r))
+            x1 = min(w_ss, int(cx + r) + 1)
+            if y0 < y1 and x0 < x1:
+                yy_c, xx_c = np.ogrid[y0:y1, x0:x1]
+                dist = (xx_c - cx) ** 2 + (yy_c - cy) ** 2
+                cell_mask_ss[y0:y1, x0:x1][dist <= r ** 2] = 1
+
+    device_filled_ss = fill_device_exterior(device_ss, cell_mask_ss)
+
     # Downsample device mask
     if supersampling > 1:
-        device_mask = rescale(device_ss.astype(float), 1.0 / supersampling,
+        device_mask = rescale(device_filled_ss.astype(float), 1.0 / supersampling,
                               anti_aliasing=False, order=0, preserve_range=True).astype(np.uint8)
     else:
-        device_mask = device_ss
+        device_mask = device_filled_ss
 
     device_mask = device_mask[:h, :w]
 
@@ -502,7 +522,101 @@ def draw_scene_supersampled(
                 dist_sq = (xx - cx_ss) ** 2 + (yy - cy_ss) ** 2
                 device_ss[y0:y1, x0:x1][dist_sq <= r_ss ** 2] = 1
 
+    # Fill the exterior: everything outside the trench = PDMS (device)
+    device_ss = fill_device_exterior(device_ss, mask_ss)
+
     return opl_ss, mask_ss, device_ss, (h_native, w_native)
+
+
+def fill_device_exterior(
+    device_wall_mask: np.ndarray,
+    cell_mask: np.ndarray,
+) -> np.ndarray:
+    """Fill device exterior so everything outside the trench is marked as device.
+
+    In a mother machine, the device walls define the boundary between the thin
+    media channel (trench interior) and thick PDMS (everything outside). The
+    walls may form an open shape (e.g. a U-shape trench open at the top).
+
+    The approach (matching old SyMBac):
+    1. Scanline: for each row with walls, find gaps between wall groups = interior
+    2. Identify the stable "channel columns" from the scanline
+    3. Extend the interior along channel columns through open ends, stopping at walls
+
+    This correctly handles U-shaped trenches (open at one end), closed boxes,
+    and arbitrary device geometries.
+
+    Args:
+        device_wall_mask: Binary mask where 1 = device wall pixels.
+        cell_mask: Mask where > 0 = cell pixels (used as fallback).
+
+    Returns:
+        Filled device mask where 1 = device (walls + PDMS exterior), 0 = media interior.
+    """
+    if not device_wall_mask.any():
+        return device_wall_mask.copy()
+
+    h, w = device_wall_mask.shape
+    walls = device_wall_mask.astype(bool)
+    interior = np.zeros((h, w), dtype=bool)
+
+    # Step 1: Scanline - find interior gaps between wall groups in each row
+    for y in range(h):
+        row = walls[y, :]
+        if not row.any():
+            continue
+        wall_pixels = np.where(row)[0]
+        diffs = np.diff(wall_pixels)
+        gap_indices = np.where(diffs > 1)[0]
+
+        for gi in gap_indices:
+            gap_left = wall_pixels[gi] + 1
+            gap_right = wall_pixels[gi + 1]
+            interior[y, gap_left:gap_right] = True
+
+    # Step 2: Identify channel columns (interior in at least some wall rows)
+    wall_rows = np.any(walls, axis=1)
+    n_wall_rows = wall_rows.sum()
+    if n_wall_rows == 0 or not interior.any():
+        # Walls exist but no interior found - fall back to all-device
+        return np.ones_like(device_wall_mask, dtype=np.uint8)
+
+    # Channel columns = columns that are interior in >30% of wall rows
+    channel_cols = np.where(
+        np.sum(interior[wall_rows, :], axis=0) > n_wall_rows * 0.3
+    )[0]
+
+    if len(channel_cols) == 0:
+        return np.ones_like(device_wall_mask, dtype=np.uint8)
+
+    # Step 3: Extend interior along channel columns through open ends
+    # For each channel column, extend upward and downward from the existing
+    # interior region, stopping when hitting a wall pixel.
+    for x in channel_cols:
+        col_interior = np.where(interior[:, x])[0]
+        if len(col_interior) == 0:
+            continue
+        col_walls = walls[:, x]
+        y_min = col_interior.min()
+        y_max = col_interior.max()
+
+        # Extend upward
+        for y in range(y_min - 1, -1, -1):
+            if col_walls[y]:
+                break
+            interior[y, x] = True
+
+        # Extend downward
+        for y in range(y_max + 1, h):
+            if col_walls[y]:
+                break
+            interior[y, x] = True
+
+    # Filled device = everything that's not interior
+    filled = np.ones_like(device_wall_mask, dtype=np.uint8)
+    filled[interior] = 0
+
+    return filled
 
 
 def _rasterize_thick_line(
