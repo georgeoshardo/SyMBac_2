@@ -16,6 +16,59 @@ from skimage.transform import rescale
 if typing.TYPE_CHECKING:
     from symbac.simulation.simulator import Simulator
     from symbac.simulation.simcell import SimCell
+    from symbac.imaging.optics import CellOpticsConfig
+
+
+def compute_two_layer_opl(
+    dist_sq: np.ndarray,
+    r_sq: float,
+    radius: float,
+    cell_optics: "CellOpticsConfig",
+) -> np.ndarray:
+    """Compute OPL for a sphere cross-section using a two-layer cell model.
+
+    Models the cell as a peptidoglycan wall (outer shell) surrounding
+    cytoplasm (inner core). The OPL at each pixel accounts for the
+    different refractive indices of each layer relative to the medium.
+
+    Args:
+        dist_sq: Array of squared distances from pixel centers to sphere center.
+        r_sq: Squared outer radius of the sphere.
+        radius: Outer radius of the sphere.
+        cell_optics: Refractive index configuration.
+
+    Returns:
+        OPL array (same shape as dist_sq). Units are in the same length
+        units as radius (typically supersampled pixels).
+    """
+    opl = np.zeros_like(dist_sq)
+    inside = dist_sq < r_sq
+    if not inside.any():
+        return opl
+
+    # Inner (cytoplasm) radius
+    r_inner = radius * (1.0 - cell_optics.wall_fraction)
+    r_inner_sq = r_inner * r_inner
+
+    # Total thickness at each point (sphere cross-section)
+    total_thickness = np.zeros_like(dist_sq)
+    total_thickness[inside] = 2.0 * np.sqrt(r_sq - dist_sq[inside])
+
+    # Inner core thickness (cytoplasm only, where inside inner sphere)
+    inner_inside = dist_sq < r_inner_sq
+    inner_thickness = np.zeros_like(dist_sq)
+    inner_thickness[inner_inside] = 2.0 * np.sqrt(r_inner_sq - dist_sq[inner_inside])
+
+    # Wall thickness = total - inner (can be zero at center if wall_fraction < 1)
+    wall_thickness = total_thickness - inner_thickness
+
+    # OPL = delta_n * thickness for each layer
+    dn_wall = cell_optics.n_wall - cell_optics.n_medium
+    dn_cyto = cell_optics.n_cytoplasm - cell_optics.n_medium
+
+    opl = dn_wall * wall_thickness + dn_cyto * inner_thickness
+
+    return opl
 
 
 def raster_cell(length: int, width: int, separation: int = 0, pinching: bool = True) -> np.ndarray:
@@ -419,6 +472,7 @@ def draw_scene_supersampled(
     pixel_scale: float,
     supersampling: int = 3,
     label_masks: bool = True,
+    cell_optics: "CellOpticsConfig | None" = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, tuple[int, int]]:
     """Draw OPL, masks, and device mask all at supersampled resolution.
 
@@ -431,6 +485,10 @@ def draw_scene_supersampled(
         pixel_scale: Microns per pixel at native camera resolution.
         supersampling: Upscale factor (e.g. 3 means render at 3x resolution).
         label_masks: Instance vs binary masks.
+        cell_optics: Optional two-layer cell optics configuration. When provided,
+            the OPL is computed using physically accurate refractive indices
+            for the wall and cytoplasm layers. When None, uses the simple
+            sphere cross-section model (2 * sqrt(R^2 - d^2)).
 
     Returns:
         Tuple of (opl_ss, masks_ss, device_ss, native_size).
@@ -480,9 +538,12 @@ def draw_scene_supersampled(
             if not inside.any():
                 continue
 
-            thickness = np.zeros_like(dist_sq)
-            thickness[inside] = 2.0 * np.sqrt(r_sq - dist_sq[inside])
-            opl_ss[iy_min:iy_max, ix_min:ix_max] += thickness
+            if cell_optics is not None:
+                contribution = compute_two_layer_opl(dist_sq, r_sq, r, cell_optics)
+            else:
+                contribution = np.zeros_like(dist_sq)
+                contribution[inside] = 2.0 * np.sqrt(r_sq - dist_sq[inside])
+            opl_ss[iy_min:iy_max, ix_min:ix_max] += contribution
             mask_ss[iy_min:iy_max, ix_min:ix_max][inside] = cell.group_id
             overlap_count[iy_min:iy_max, ix_min:ix_max] += inside.astype(np.int32)
 

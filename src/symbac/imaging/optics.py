@@ -15,10 +15,40 @@ from matplotlib import pyplot as plt
 from scipy.special import jv
 
 
+from dataclasses import dataclass
+
+
 class PSFMode(Enum):
     PHASE_CONTRAST = "phase_contrast"
     FLUORESCENCE_2D = "fluorescence_2d"
     FLUORESCENCE_3D = "fluorescence_3d"
+
+
+@dataclass
+class CellOpticsConfig:
+    """Refractive index configuration for two-layer cell OPL model.
+
+    Models a bacterium as a peptidoglycan wall (higher RI) surrounding
+    cytoplasm (lower RI), both immersed in growth medium. The OPL at
+    each pixel is:
+
+        OPL(x,y) = (n_wall - n_medium) * wall_thickness(x,y)
+                  + (n_cytoplasm - n_medium) * cytoplasm_thickness(x,y)
+
+    This produces a bright rim and dimmer interior characteristic of
+    phase contrast images of bacteria.
+
+    Args:
+        n_medium: Refractive index of growth medium (default: 1.33, water).
+        n_wall: Refractive index of peptidoglycan wall (default: 1.45).
+        n_cytoplasm: Refractive index of cytoplasm (default: 1.39).
+        wall_fraction: Fraction of cell radius occupied by the wall
+            (default: 0.1, i.e. wall is 10% of the radius thick).
+    """
+    n_medium: float = 1.33
+    n_wall: float = 1.45
+    n_cytoplasm: float = 1.39
+    wall_fraction: float = 0.1
 
 
 # Standard phase contrast condenser parameters: (W, R, diameter) in mm
@@ -483,3 +513,72 @@ def _phase_contrast_kernel(
 
     kernel += offset
     return kernel
+
+
+def apply_defocus_pupil(
+    kernel: np.ndarray,
+    defocus_um: float,
+    wavelength: float,
+    NA: float,
+    n: float,
+    pixel_scale: float,
+) -> np.ndarray:
+    """Apply defocus via a pupil-function phase term in Fourier space.
+
+    Instead of blurring the PSF with a Gaussian (which has no physical basis),
+    this applies the optical defocus aberration:
+
+        W(rho) = defocus_um * (1 - sqrt(1 - (rho * NA / n)^2))
+
+    where rho is the normalised pupil coordinate. The PSF is Fourier-transformed,
+    multiplied by exp(i * 2pi/lambda * W(rho)), and transformed back.
+
+    Args:
+        kernel: 2D PSF kernel in spatial domain.
+        defocus_um: Defocus distance in microns. 0 = in-focus.
+        wavelength: Imaging wavelength in microns.
+        NA: Numerical aperture.
+        n: Refractive index of the immersion medium.
+        pixel_scale: Microns per pixel at the kernel's resolution.
+
+    Returns:
+        Defocused PSF kernel (same shape as input).
+    """
+    if defocus_um == 0:
+        return kernel.copy()
+
+    h, w = kernel.shape
+    # Spatial frequency coordinates (cycles per micron)
+    fy = np.fft.fftfreq(h, d=pixel_scale)
+    fx = np.fft.fftfreq(w, d=pixel_scale)
+    FX, FY = np.meshgrid(fx, fy)
+    rho_freq = np.sqrt(FX**2 + FY**2)
+
+    # Normalise to pupil coordinate: rho_pupil in [0, 1] maps to [0, NA/wavelength]
+    # The cutoff spatial frequency is NA / wavelength
+    cutoff = NA / wavelength
+    rho_norm = rho_freq / cutoff  # normalised pupil radius
+
+    # Compute defocus wavefront error (only inside the pupil)
+    # W(rho) = defocus_um * (1 - sqrt(1 - (rho * NA / n)^2))
+    # Using the exact Debye model for defocus
+    sin_alpha = rho_norm * NA / n
+    # Clip to valid range (inside pupil: sin_alpha <= 1)
+    valid = sin_alpha < 1.0
+    W = np.zeros_like(rho_norm)
+    W[valid] = defocus_um * (1.0 - np.sqrt(1.0 - sin_alpha[valid]**2))
+
+    # Phase transfer function
+    phase = np.exp(1j * 2 * np.pi / wavelength * W)
+
+    # Apply in Fourier domain: zero outside pupil
+    pupil_mask = rho_norm <= 1.0
+    H_defocus = np.zeros_like(phase)
+    H_defocus[pupil_mask] = phase[pupil_mask]
+
+    # Transform PSF to OTF, apply defocus, transform back
+    OTF = np.fft.fft2(kernel)
+    OTF_defocused = OTF * H_defocus
+    kernel_defocused = np.real(np.fft.ifft2(OTF_defocused))
+
+    return kernel_defocused

@@ -203,13 +203,13 @@ class TestImageFeatures:
         feats = ImageFeatures.extract(noisy_image)
         vec = feats.to_vector()
         assert vec.ndim == 1
-        assert len(vec) > 19  # 19 scalars + spectrum bins
+        assert len(vec) > 24  # 24 scalars + spectrum bins
         assert not np.any(np.isnan(vec))
 
     def test_to_vector_no_spectrum(self, noisy_image):
         feats = ImageFeatures.extract(noisy_image)
         vec = feats.to_vector(include_spectrum=False)
-        assert len(vec) == 19
+        assert len(vec) == 24
 
     def test_uniform_low_variation(self, uniform_image):
         feats = ImageFeatures.extract(uniform_image)

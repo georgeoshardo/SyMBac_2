@@ -98,6 +98,15 @@ class ImageFeatures:
     gradient_std: float = 0.0       # std of gradient magnitude
     laplacian_var: float = 0.0      # variance of Laplacian (focus measure)
 
+    # --- Cell edge profile ---
+    cell_edge_mean: float = 0.0         # mean intensity at cell boundaries
+    cell_edge_contrast: float = 0.0     # contrast between cell edge and interior
+    cell_edge_width: float = 0.0        # characteristic width of edge transition
+
+    # --- Device halo ---
+    device_halo_width: float = 0.0      # characteristic width of halo near device edges
+    device_halo_intensity: float = 0.0  # peak intensity of the halo
+
     # --- Region statistics (if masks provided) ---
     region_means: dict = field(default_factory=dict)
     region_stds: dict = field(default_factory=dict)
@@ -169,6 +178,19 @@ class ImageFeatures:
         laplacian = ndimage.laplace(img)
         feats.laplacian_var = float(np.var(laplacian))
 
+        # --- Cell edge profile ---
+        if masks is not None:
+            edge_feats = _cell_edge_features(img, masks)
+            feats.cell_edge_mean = edge_feats["edge_mean"]
+            feats.cell_edge_contrast = edge_feats["edge_contrast"]
+            feats.cell_edge_width = edge_feats["edge_width"]
+
+        # --- Device halo ---
+        if device_mask is not None:
+            halo_feats = _device_halo_features(img, device_mask)
+            feats.device_halo_width = halo_feats["halo_width"]
+            feats.device_halo_intensity = halo_feats["halo_intensity"]
+
         # --- Region statistics ---
         if masks is not None or device_mask is not None:
             feats.region_means, feats.region_stds = _region_statistics(
@@ -196,6 +218,9 @@ class ImageFeatures:
             self.glcm_energy, self.glcm_homogeneity,
             self.edge_density, self.gradient_mean, self.gradient_std,
             self.laplacian_var,
+            self.cell_edge_mean, self.cell_edge_contrast,
+            self.cell_edge_width,
+            self.device_halo_width, self.device_halo_intensity,
         ]
         vec = np.array(scalars, dtype=np.float64)
         if include_spectrum and len(self.radial_spectrum) > 0:
@@ -241,6 +266,8 @@ def feature_distance(
         "glcm_contrast", "glcm_correlation", "glcm_energy",
         "glcm_homogeneity", "edge_density", "gradient_mean",
         "gradient_std", "laplacian_var",
+        "cell_edge_mean", "cell_edge_contrast", "cell_edge_width",
+        "device_halo_width", "device_halo_intensity",
     ]
 
     for name in scalar_names:
@@ -311,6 +338,13 @@ DEFAULT_FEATURE_WEIGHTS: dict[str, float] = {
     "gradient_mean": 3.0,
     "gradient_std": 2.0,
     "laplacian_var": 2.0,
+    # Cell edge profile (important for phase contrast realism)
+    "cell_edge_mean": 4.0,
+    "cell_edge_contrast": 4.0,
+    "cell_edge_width": 3.0,
+    # Device halo
+    "device_halo_width": 3.0,
+    "device_halo_intensity": 3.0,
     # Region-specific (high weight — these are the most direct comparisons)
     "region_mean_media": 5.0,
     "region_mean_cell": 5.0,
@@ -331,14 +365,24 @@ class OptimizationBounds:
     """Parameter bounds for rendering optimization.
 
     Each field is a (min, max) tuple defining the search space.
+
+    PSF-related bounds (apo_sigma, psf_offset, edge_halo_width, edge_halo_intensity)
+    are None by default. When set, the optimizer will include them in the search.
     """
     media_multiplier: tuple[float, float] = (5.0, 100.0)
     cell_multiplier: tuple[float, float] = (-30.0, 0.0)
     device_multiplier: tuple[float, float] = (-150.0, -5.0)
     defocus: tuple[float, float] = (0.0, 10.0)
+    defocus_um: Optional[tuple[float, float]] = None
     noise_var: tuple[float, float] = (0.0, 0.01)
     halo_top_intensity: tuple[float, float] = (0.8, 1.2)
     halo_bottom_intensity: tuple[float, float] = (0.8, 1.2)
+    # PSF condenser parameters (optional, included only when bounds are set)
+    apo_sigma: Optional[tuple[float, float]] = None
+    psf_offset: Optional[tuple[float, float]] = None
+    # Device edge halo parameters (optional)
+    edge_halo_width: Optional[tuple[float, float]] = None
+    edge_halo_intensity: Optional[tuple[float, float]] = None
 
 
 @dataclass
@@ -420,30 +464,88 @@ def optimize_render_params(
     convergence_history = []
     eval_count = [0]
 
-    # Build bounds list for optimizer
+    # Build bounds list for optimizer dynamically
+    # Core rendering parameters (always included)
+    use_defocus_um = bounds.defocus_um is not None
     param_names = [
         "media_multiplier", "cell_multiplier", "device_multiplier",
-        "defocus", "noise_var", "halo_top_intensity", "halo_bottom_intensity",
     ]
+    if use_defocus_um:
+        param_names.append("defocus_um")
+    else:
+        param_names.append("defocus")
+    param_names.extend(["noise_var", "halo_top_intensity", "halo_bottom_intensity"])
+
+    # Optional PSF condenser parameters
+    optimize_psf = False
+    if bounds.apo_sigma is not None:
+        param_names.append("apo_sigma")
+        optimize_psf = True
+    if bounds.psf_offset is not None:
+        param_names.append("psf_offset")
+        optimize_psf = True
+
+    # Optional device edge halo parameters
+    if bounds.edge_halo_width is not None:
+        param_names.append("edge_halo_width")
+    if bounds.edge_halo_intensity is not None:
+        param_names.append("edge_halo_intensity")
+
     scipy_bounds = [getattr(bounds, name) for name in param_names]
+
+    def _build_config_and_psf(x):
+        """Build RenderConfig and optionally a new PSFModel from parameter vector."""
+        params = dict(zip(param_names, x))
+
+        config_kwargs = dict(
+            media_multiplier=params["media_multiplier"],
+            cell_multiplier=params["cell_multiplier"],
+            device_multiplier=params["device_multiplier"],
+            noise_var=params["noise_var"],
+            halo_top_intensity=params["halo_top_intensity"],
+            halo_bottom_intensity=params["halo_bottom_intensity"],
+            border_expansion=base_config.border_expansion,
+        )
+        if use_defocus_um:
+            config_kwargs["defocus_um"] = params["defocus_um"]
+            config_kwargs["defocus"] = 0.0
+        else:
+            config_kwargs["defocus"] = params["defocus"]
+
+        if "edge_halo_width" in params:
+            config_kwargs["edge_halo_width"] = params["edge_halo_width"]
+        if "edge_halo_intensity" in params:
+            config_kwargs["edge_halo_intensity"] = params["edge_halo_intensity"]
+
+        config = RenderConfig(**config_kwargs)
+
+        # Build a new PSF if condenser params are being optimized
+        current_psf = psf_model
+        if optimize_psf:
+            from symbac.imaging.optics import PSFModel
+            new_sigma = params.get("apo_sigma", psf_model.apo_sigma)
+            new_offset = params.get("psf_offset", psf_model.offset)
+            current_psf = PSFModel.phase_contrast(
+                wavelength=psf_model.wavelength,
+                NA=psf_model.NA,
+                n=psf_model.n,
+                condenser=psf_model.condenser,
+                apo_sigma=new_sigma,
+                radius=psf_model.radius,
+                pixel_scale=psf_model.pixel_scale,
+                offset=new_offset,
+            )
+
+        return config, current_psf
 
     def objective(x):
         """Evaluate rendering parameters and return feature distance."""
-        config = RenderConfig(
-            media_multiplier=x[0],
-            cell_multiplier=x[1],
-            device_multiplier=x[2],
-            defocus=x[3],
-            noise_var=x[4],
-            halo_top_intensity=x[5],
-            halo_bottom_intensity=x[6],
-            border_expansion=base_config.border_expansion,
-        )
+        config, current_psf = _build_config_and_psf(x)
 
         try:
             synth, _ = render_image(
                 opl_scene, scene_masks, device_mask,
-                psf_model, config,
+                current_psf, config,
                 supersampling=supersampling,
                 camera=camera,
                 rng=np.random.default_rng(seed),
@@ -491,16 +593,7 @@ def optimize_render_params(
         raise ValueError(f"Unknown method '{method}'. Use 'differential_evolution' or 'dual_annealing'.")
 
     best_x = result.x
-    best_config = RenderConfig(
-        media_multiplier=best_x[0],
-        cell_multiplier=best_x[1],
-        device_multiplier=best_x[2],
-        defocus=best_x[3],
-        noise_var=best_x[4],
-        halo_top_intensity=best_x[5],
-        halo_bottom_intensity=best_x[6],
-        border_expansion=base_config.border_expansion,
-    )
+    best_config, _ = _build_config_and_psf(best_x)
 
     if verbose:
         print(f"\nOptimization complete after {eval_count[0]} evaluations")
@@ -794,23 +887,69 @@ def optimize_render_params_neural(
     convergence_history = []
     eval_count = [0]
 
-    param_names = [
-        "media_multiplier", "cell_multiplier", "device_multiplier",
-        "defocus", "noise_var", "halo_top_intensity", "halo_bottom_intensity",
-    ]
+    # Build dynamic parameter list (same logic as optimize_render_params)
+    use_defocus_um = bounds.defocus_um is not None
+    param_names = ["media_multiplier", "cell_multiplier", "device_multiplier"]
+    if use_defocus_um:
+        param_names.append("defocus_um")
+    else:
+        param_names.append("defocus")
+    param_names.extend(["noise_var", "halo_top_intensity", "halo_bottom_intensity"])
+
+    optimize_psf = False
+    if bounds.apo_sigma is not None:
+        param_names.append("apo_sigma")
+        optimize_psf = True
+    if bounds.psf_offset is not None:
+        param_names.append("psf_offset")
+        optimize_psf = True
+    if bounds.edge_halo_width is not None:
+        param_names.append("edge_halo_width")
+    if bounds.edge_halo_intensity is not None:
+        param_names.append("edge_halo_intensity")
+
     scipy_bounds = [getattr(bounds, name) for name in param_names]
 
-    def objective(x):
-        config = RenderConfig(
-            media_multiplier=x[0], cell_multiplier=x[1],
-            device_multiplier=x[2], defocus=x[3], noise_var=x[4],
-            halo_top_intensity=x[5], halo_bottom_intensity=x[6],
+    def _build_config_and_psf(x):
+        params = dict(zip(param_names, x))
+        config_kwargs = dict(
+            media_multiplier=params["media_multiplier"],
+            cell_multiplier=params["cell_multiplier"],
+            device_multiplier=params["device_multiplier"],
+            noise_var=params["noise_var"],
+            halo_top_intensity=params["halo_top_intensity"],
+            halo_bottom_intensity=params["halo_bottom_intensity"],
             border_expansion=base_config.border_expansion,
         )
+        if use_defocus_um:
+            config_kwargs["defocus_um"] = params["defocus_um"]
+            config_kwargs["defocus"] = 0.0
+        else:
+            config_kwargs["defocus"] = params["defocus"]
+        if "edge_halo_width" in params:
+            config_kwargs["edge_halo_width"] = params["edge_halo_width"]
+        if "edge_halo_intensity" in params:
+            config_kwargs["edge_halo_intensity"] = params["edge_halo_intensity"]
+
+        config = RenderConfig(**config_kwargs)
+        current_psf = psf_model
+        if optimize_psf:
+            from symbac.imaging.optics import PSFModel
+            current_psf = PSFModel.phase_contrast(
+                wavelength=psf_model.wavelength, NA=psf_model.NA, n=psf_model.n,
+                condenser=psf_model.condenser,
+                apo_sigma=params.get("apo_sigma", psf_model.apo_sigma),
+                radius=psf_model.radius, pixel_scale=psf_model.pixel_scale,
+                offset=params.get("psf_offset", psf_model.offset),
+            )
+        return config, current_psf
+
+    def objective(x):
+        config, current_psf = _build_config_and_psf(x)
 
         try:
             synth, _ = render_image(
-                opl_scene, scene_masks, device_mask, psf_model, config,
+                opl_scene, scene_masks, device_mask, current_psf, config,
                 supersampling=supersampling, camera=camera,
                 rng=np.random.default_rng(seed),
             )
@@ -852,12 +991,7 @@ def optimize_render_params_neural(
     )
 
     best_x = result.x
-    best_config = RenderConfig(
-        media_multiplier=best_x[0], cell_multiplier=best_x[1],
-        device_multiplier=best_x[2], defocus=best_x[3], noise_var=best_x[4],
-        halo_top_intensity=best_x[5], halo_bottom_intensity=best_x[6],
-        border_expansion=base_config.border_expansion,
-    )
+    best_config, _ = _build_config_and_psf(best_x)
 
     return OptimizationResult(
         best_config=best_config,
@@ -1246,6 +1380,140 @@ def _glcm_single(
         glcm /= total
 
     return glcm
+
+
+def _cell_edge_features(
+    image: np.ndarray,
+    masks: np.ndarray,
+) -> dict[str, float]:
+    """Extract features characterizing the intensity profile at cell edges.
+
+    Measures the mean intensity at cell boundaries, the contrast between
+    edge and interior, and the characteristic width of the edge transition.
+
+    Args:
+        image: 2D grayscale image in [0, 1] range.
+        masks: Instance segmentation mask (cells > 0).
+
+    Returns:
+        Dict with "edge_mean", "edge_contrast", "edge_width".
+    """
+    result = {"edge_mean": 0.0, "edge_contrast": 0.0, "edge_width": 0.0}
+
+    cell_mask = masks > 0
+    if not cell_mask.any():
+        return result
+
+    # Find cell boundaries using morphological gradient
+    from scipy.ndimage import binary_erosion, binary_dilation
+    eroded = binary_erosion(cell_mask, iterations=1)
+    dilated = binary_dilation(cell_mask, iterations=1)
+    boundary = dilated & ~eroded
+
+    if not boundary.any():
+        return result
+
+    # Edge mean intensity
+    result["edge_mean"] = float(np.mean(image[boundary]))
+
+    # Interior = eroded cell region
+    if eroded.any():
+        interior_mean = float(np.mean(image[eroded]))
+        # Edge contrast: difference between edge and interior
+        result["edge_contrast"] = abs(result["edge_mean"] - interior_mean)
+
+    # Edge width: measure the gradient magnitude at the boundary
+    gy, gx = np.gradient(image)
+    grad_mag = np.sqrt(gx**2 + gy**2)
+    if boundary.any() and grad_mag[boundary].mean() > 0:
+        # Edge width inversely proportional to gradient steepness
+        # Normalise by the edge contrast to get a width-like measure
+        mean_grad = float(np.mean(grad_mag[boundary]))
+        if result["edge_contrast"] > 0:
+            result["edge_width"] = result["edge_contrast"] / mean_grad
+        else:
+            result["edge_width"] = 1.0 / mean_grad
+
+    return result
+
+
+def _device_halo_features(
+    image: np.ndarray,
+    device_mask: np.ndarray,
+) -> dict[str, float]:
+    """Extract features characterizing the halo at device/media boundaries.
+
+    Measures the characteristic width and intensity of the bright fringe
+    near the device edge, which is a key indicator of phase contrast quality.
+
+    Args:
+        image: 2D grayscale image in [0, 1] range.
+        device_mask: Binary device mask (1 = device, 0 = media).
+
+    Returns:
+        Dict with "halo_width" and "halo_intensity".
+    """
+    from scipy.ndimage import distance_transform_edt
+
+    result = {"halo_width": 0.0, "halo_intensity": 0.0}
+
+    device_bool = device_mask.astype(bool)
+    if not device_bool.any() or device_bool.all():
+        return result
+
+    # Distance from each media pixel to nearest device pixel
+    media_mask = ~device_bool
+    if not media_mask.any():
+        return result
+
+    dist = distance_transform_edt(media_mask)
+
+    # Sample intensity as a function of distance from device edge
+    max_dist = min(20, int(dist.max()))
+    if max_dist < 2:
+        return result
+
+    # Compute mean intensity at each distance bin
+    intensities = []
+    for d in range(1, max_dist + 1):
+        band = media_mask & (dist >= d - 0.5) & (dist < d + 0.5)
+        if band.any():
+            intensities.append(float(np.mean(image[band])))
+        else:
+            intensities.append(np.nan)
+
+    intensities = np.array(intensities)
+    valid = ~np.isnan(intensities)
+    if valid.sum() < 3:
+        return result
+
+    # Background intensity = mean of far pixels (last third)
+    far_start = max(1, len(intensities) * 2 // 3)
+    far_intensities = intensities[far_start:]
+    far_valid = ~np.isnan(far_intensities)
+    if far_valid.any():
+        background = float(np.mean(far_intensities[far_valid]))
+    else:
+        background = float(np.nanmean(intensities))
+
+    # Halo intensity = peak deviation from background
+    deviations = np.abs(intensities - background)
+    deviations[~valid] = 0
+    result["halo_intensity"] = float(np.max(deviations))
+
+    # Halo width = distance at which intensity drops to 1/e of peak
+    peak_dev = result["halo_intensity"]
+    if peak_dev > 0:
+        threshold = peak_dev / np.e
+        # Find the first distance where deviation drops below threshold
+        below = deviations < threshold
+        crossed = np.where(below & valid)[0]
+        if len(crossed) > 0:
+            result["halo_width"] = float(crossed[0] + 1)
+        else:
+            result["halo_width"] = float(max_dist)
+
+    return result
 
 
 def _region_statistics(

@@ -13,8 +13,11 @@ Typical usage:
     from symbac.imaging.noise import random_perlin_background
 """
 
-from symbac.imaging.optics import PSFModel, Camera, PSFMode
-from symbac.imaging.renderer import RenderConfig, render_image, render_fluorescence
+from symbac.imaging.optics import PSFModel, Camera, PSFMode, CellOpticsConfig
+from symbac.imaging.renderer import (
+    RenderConfig, render_image, render_fluorescence,
+    compute_device_edge_halo, apply_illumination_gradient,
+)
 from symbac.imaging.drawing import draw_scene_supersampled, draw_scene
 from symbac.imaging.noise import (
     NoiseConfig,
