@@ -46,18 +46,18 @@ print(f"Real image: shape={real_img.shape}, dtype={real_img.dtype}, "
 # Mother machine simulation — 4000 steps, tight trench
 # ============================================================
 # Geometry tuned to match real mother machine appearance:
-# - Trench ~15% wider than initial tight fit
-# - Trench ~5% shorter
-# - Cells 20% thicker (SEGMENT_RADIUS 10→12)
+# - Trench +20% wider again (26→31)
+# - Trench 20% shorter (475→380)
+# - Cells 20% wider (SEGMENT_RADIUS 12→14)
 # - Division length ~2x longer (BASE_MAX_LENGTH 130→260)
-TRENCH_WIDTH = 26
-TRENCH_LENGTH = 475
+TRENCH_WIDTH = 31
+TRENCH_LENGTH = 380
 SIM_STEPS = 4000
 
 physics_config = PhysicsConfig(ITERATIONS=100, DAMPING=0.3)
 cell_config = CellConfig(
     GRANULARITY=4,
-    SEGMENT_RADIUS=12,
+    SEGMENT_RADIUS=14,
     SEGMENT_MASS=1.0,
     GROWTH_RATE=5,
     BASE_MAX_LENGTH=260,
@@ -133,7 +133,7 @@ config_matched = RenderConfig(
     media_multiplier=-28.21,
     cell_multiplier=50.00,
     device_multiplier=16.22,
-    defocus=20.0,
+    defocus=10.0,
     noise_var=0.0,
     border_expansion=1.5,
     halo_top_intensity=1.0,
