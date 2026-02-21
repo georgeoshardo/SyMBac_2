@@ -26,4 +26,13 @@ from symbac.imaging.training_data import (
     generate_training_data,
     record_simulation_frames,
 )
+from symbac.imaging.feature_matching import (
+    ImageFeatures,
+    feature_distance,
+    OptimizationBounds,
+    OptimizationResult,
+    optimize_render_params,
+    compare_images,
+    plot_comparison,
+)
 from symbac.imaging.napari_viewer import launch_viewer
