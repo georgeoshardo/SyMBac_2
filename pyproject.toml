@@ -37,6 +37,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+gui = [
+    "napari[all]",
+    "magicgui",
+]
 dev = [
     "pytest",
     "black",

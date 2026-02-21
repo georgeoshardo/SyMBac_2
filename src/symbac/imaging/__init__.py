@@ -26,3 +26,4 @@ from symbac.imaging.training_data import (
     generate_training_data,
     record_simulation_frames,
 )
+from symbac.imaging.napari_viewer import launch_viewer
